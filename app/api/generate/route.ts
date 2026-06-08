@@ -2,13 +2,13 @@
 // Server-side streaming endpoint. The browser ONLY ever talks to this route — the
 // model call and your API key never reach the client. (Interview talking point #1.)
 //
-// Behaviour is config-driven: if OPENAI_API_KEY is set we stream from the real model;
-// if not, we fall back to the mock. That means anyone can clone the repo and run the
-// full UX with zero setup, and we never burn tokens while developing. Both paths
-// return the SAME plain-text stream, so the client read-loop is identical either way.
+// Behaviour is config-driven: if GOOGLE_GENERATIVE_AI_API_KEY is set we stream from
+// Gemini; if not, we fall back to the mock. So anyone can clone the repo and run the
+// full UX with zero setup, and we never burn quota while developing. Both paths return
+// the SAME plain-text stream, so the client read-loop is identical either way.
 
 import { streamText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 import {
   buildPrompt,
   PLATFORMS,
@@ -18,8 +18,9 @@ import {
 } from "@/lib/prompts";
 import { mockStream } from "@/lib/mock";
 
-// Cheap, fast, good-enough for drafting. Swap for another OpenAI model id if you like.
-const MODEL = "gpt-4o-mini";
+// Fast and free-tier-friendly. Swap for another Gemini id (e.g. "gemini-flash-latest"
+// or "gemini-2.0-flash") — see @ai-sdk/google for the supported model IDs.
+const MODEL = "gemini-2.5-flash";
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
   const prompt = buildPrompt(input);
 
   // ── No API key → mock fallback (keeps the app runnable for anyone) ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     return new Response(mockStream(input), {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
@@ -49,9 +50,9 @@ export async function POST(req: Request) {
     });
   }
 
-  // ── Real model → stream the completion ──
+  // ── Real model → stream the completion from Gemini ──
   const result = streamText({
-    model: openai(MODEL),
+    model: google(MODEL),
     prompt,
   });
 
