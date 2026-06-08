@@ -1,65 +1,127 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import {
+  PLATFORMS,
+  LANGUAGES,
+  TONES,
+  PLATFORM_LABELS,
+  LANGUAGE_LABELS,
+  TONE_LABELS,
+  type Platform,
+  type Language,
+  type Tone,
+} from "@/lib/prompts";
 
 export default function Home() {
+  const [source, setSource] = useState("");
+  const [platform, setPlatform] = useState<Platform>("linkedin");
+  const [language, setLanguage] = useState<Language>("en");
+  const [tone, setTone] = useState<Tone>("professional");
+  const [output, setOutput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function generate() {
+    setLoading(true);
+    setError(null);
+    setOutput("");
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, platform, language, tone }),
+      });
+      if (!res.ok || !res.body) {
+        throw new Error((await res.text()) || "Request failed");
+      }
+
+      // --- This loop is the heart of streaming UX ---
+      // We read the response body chunk-by-chunk and append as it arrives,
+      // instead of waiting for the whole thing. That's why it "types" at you.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        setOutput((prev) => prev + decoder.decode(value, { stream: true }));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main className="mx-auto max-w-2xl space-y-6 p-6">
+      <header>
+        <h1 className="text-2xl font-bold">Multilingual Content Studio</h1>
+        <p className="text-sm text-gray-500">
+          Paste source text → pick a platform → stream a ready-to-post draft.
+        </p>
+      </header>
+
+      <textarea
+        className="h-40 w-full rounded-lg border border-gray-300 p-3 text-sm"
+        placeholder="Paste an article, transcript, or rough notes…"
+        value={source}
+        onChange={(e) => setSource(e.target.value)}
+      />
+
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Platform" value={platform} onChange={(v) => setPlatform(v as Platform)} options={PLATFORMS} labels={PLATFORM_LABELS} />
+        <Field label="Language" value={language} onChange={(v) => setLanguage(v as Language)} options={LANGUAGES} labels={LANGUAGE_LABELS} />
+        <Field label="Tone" value={tone} onChange={(v) => setTone(v as Tone)} options={TONES} labels={TONE_LABELS} />
+      </div>
+
+      <button
+        onClick={generate}
+        disabled={loading || !source.trim()}
+        className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+      >
+        {loading ? "Generating…" : "Generate"}
+      </button>
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {(output || loading) && (
+        <article className="whitespace-pre-wrap rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-black">
+          {output}
+          {loading && <span className="animate-pulse">▌</span>}
+        </article>
+      )}
+    </main>
+  );
+}
+
+function Field<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+  labels,
+}: {
+  label: string;
+  value: T;
+  onChange: (v: string) => void;
+  options: readonly T[];
+  labels: Record<T, string>;
+}) {
+  return (
+    <label className="block text-xs font-medium text-gray-600">
+      {label}
+      <select
+        className="mt-1 w-full rounded-lg border border-gray-300 p-2 text-sm text-black"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {labels[o]}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
