@@ -8,9 +8,15 @@ importers:
 
   .:
     dependencies:
+      '@ai-sdk/anthropic':
+        specifier: ^3.0.81
+        version: 3.0.81(zod@4.4.3)
       '@ai-sdk/google':
         specifier: ^3.0.80
         version: 3.0.80(zod@4.4.3)
+      '@ai-sdk/openai':
+        specifier: ^3.0.68
+        version: 3.0.68(zod@4.4.3)
       ai:
         specifier: ^6.0.198
         version: 6.0.198(zod@4.4.3)
@@ -51,6 +57,12 @@ importers:
 
 packages:
 
+  '@ai-sdk/anthropic@3.0.81':
+    resolution: {integrity: sha512-B1JDd9Ugq9R5AgIaW3674lhGCMMYJcPUxnrZh8fzbGojgg4QvHFRv6eZahGQAUsmGHbcf74G9bdSBDLWQGY2GA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/gateway@3.0.126':
     resolution: {integrity: sha512-OHwcwdVkzLo7Rx4eeFyyH3e/vlsYg11HIgKPf5yH6jkptI1Kzq8BX9xZPIBq4BrLBTF2p6pgvWqRfy6AvARGkQ==}
     engines: {node: '>=18'}
@@ -59,6 +71,12 @@ packages:
 
   '@ai-sdk/google@3.0.80':
     resolution: {integrity: sha512-5ORbm/yFUPO0MEvZsxBMN0cdKw2+lwU/wVn5KN3KF8Dmk1LughuDuUohMh/7iU/XFTiyB0OvmTW/tdV/J7O9zg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai@3.0.68':
+    resolution: {integrity: sha512-FCs/DPr4M95UyZ/ABHJmTmCEYRCka/4J0Bna0nsd78QCdGIS0X/zhn+fVzB7mZJo7464uOWYUjROx9PGNGOb0w==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -1994,6 +2012,12 @@ packages:
 
 snapshots:
 
+  '@ai-sdk/anthropic@3.0.81(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.10
+      '@ai-sdk/provider-utils': 4.0.27(zod@4.4.3)
+      zod: 4.4.3
+
   '@ai-sdk/gateway@3.0.126(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 3.0.10
@@ -2002,6 +2026,12 @@ snapshots:
       zod: 4.4.3
 
   '@ai-sdk/google@3.0.80(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.10
+      '@ai-sdk/provider-utils': 4.0.27(zod@4.4.3)
+      zod: 4.4.3
+
+  '@ai-sdk/openai@3.0.68(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 3.0.10
       '@ai-sdk/provider-utils': 4.0.27(zod@4.4.3)

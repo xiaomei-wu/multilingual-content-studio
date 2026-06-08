@@ -1,6 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  PROVIDERS,
+  getProvider,
+  DEFAULT_PROVIDER,
+  DEFAULT_MODEL,
+  type ProviderId,
+} from "@/lib/models";
 import {
   PLATFORMS,
   LANGUAGES,
@@ -13,14 +20,38 @@ import {
   type Tone,
 } from "@/lib/prompts";
 
+type Option = { value: string; label: string };
+
 export default function Home() {
   const [source, setSource] = useState("");
+  const [provider, setProvider] = useState<ProviderId>(DEFAULT_PROVIDER);
+  const [model, setModel] = useState<string>(DEFAULT_MODEL);
   const [platform, setPlatform] = useState<Platform>("linkedin");
   const [language, setLanguage] = useState<Language>("en");
   const [tone, setTone] = useState<Tone>("professional");
   const [output, setOutput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [configured, setConfigured] = useState<Record<string, boolean> | null>(null);
+
+  // Ask the server which providers have a key set, to show a live/mock badge.
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((d) => setConfigured(d.configured))
+      .catch(() => setConfigured(null));
+  }, []);
+
+  // When provider changes, snap the model to that provider's first option.
+  function changeProvider(id: string) {
+    const p = getProvider(id);
+    if (!p) return;
+    setProvider(p.id);
+    setModel(p.models[0].id);
+  }
+
+  const providerModels = getProvider(provider)?.models ?? [];
+  const isLive = configured?.[provider] === true;
 
   async function generate() {
     setLoading(true);
@@ -30,15 +61,11 @@ export default function Home() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, platform, language, tone }),
+        body: JSON.stringify({ source, platform, language, tone, provider, model }),
       });
       if (!res.ok || !res.body) {
         throw new Error((await res.text()) || "Request failed");
       }
-
-      // --- This loop is the heart of streaming UX ---
-      // We read the response body chunk-by-chunk and append as it arrives,
-      // instead of waiting for the whole thing. That's why it "types" at you.
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       for (;;) {
@@ -58,9 +85,23 @@ export default function Home() {
       <header>
         <h1 className="text-2xl font-bold">Multilingual Content Studio</h1>
         <p className="text-sm text-gray-500">
-          Paste source text → pick a platform → stream a ready-to-post draft.
+          Paste source text → pick a provider, platform &amp; language → stream a draft.
         </p>
       </header>
+
+      {/* Provider + model + live badge */}
+      <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
+        <Select label="Provider" value={provider} onChange={changeProvider} options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))} />
+        <Select label="Model" value={model} onChange={setModel} options={providerModels.map((m) => ({ value: m.id, label: m.label }))} />
+        <span
+          className={`mb-1 rounded-full px-2 py-1 text-xs font-medium ${
+            isLive ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+          }`}
+          title={isLive ? "API key configured — real output" : "No key for this provider — mock output"}
+        >
+          {configured === null ? "…" : isLive ? "● live" : "● mock"}
+        </span>
+      </div>
 
       <textarea
         className="h-40 w-full rounded-lg border border-gray-300 p-3 text-sm"
@@ -70,9 +111,9 @@ export default function Home() {
       />
 
       <div className="grid grid-cols-3 gap-3">
-        <Field label="Platform" value={platform} onChange={(v) => setPlatform(v as Platform)} options={PLATFORMS} labels={PLATFORM_LABELS} />
-        <Field label="Language" value={language} onChange={(v) => setLanguage(v as Language)} options={LANGUAGES} labels={LANGUAGE_LABELS} />
-        <Field label="Tone" value={tone} onChange={(v) => setTone(v as Tone)} options={TONES} labels={TONE_LABELS} />
+        <Select label="Platform" value={platform} onChange={(v) => setPlatform(v as Platform)} options={PLATFORMS.map((p) => ({ value: p, label: PLATFORM_LABELS[p] }))} />
+        <Select label="Language" value={language} onChange={(v) => setLanguage(v as Language)} options={LANGUAGES.map((l) => ({ value: l, label: LANGUAGE_LABELS[l] }))} />
+        <Select label="Tone" value={tone} onChange={(v) => setTone(v as Tone)} options={TONES.map((t) => ({ value: t, label: TONE_LABELS[t] }))} />
       </div>
 
       <button
@@ -95,18 +136,16 @@ export default function Home() {
   );
 }
 
-function Field<T extends string>({
+function Select({
   label,
   value,
   onChange,
   options,
-  labels,
 }: {
   label: string;
-  value: T;
+  value: string;
   onChange: (v: string) => void;
-  options: readonly T[];
-  labels: Record<T, string>;
+  options: Option[];
 }) {
   return (
     <label className="block text-xs font-medium text-gray-600">
@@ -117,8 +156,8 @@ function Field<T extends string>({
         onChange={(e) => onChange(e.target.value)}
       >
         {options.map((o) => (
-          <option key={o} value={o}>
-            {labels[o]}
+          <option key={o.value} value={o.value}>
+            {o.label}
           </option>
         ))}
       </select>
