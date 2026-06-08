@@ -1,8 +1,14 @@
 // app/api/generate/route.ts
 // Server-side streaming endpoint. The browser ONLY ever talks to this route — the
-// model call (and, later, your real API key) never reaches the client. That boundary
-// is the whole reason this lives on the server. (Interview talking point #1.)
+// model call and your API key never reach the client. (Interview talking point #1.)
+//
+// Behaviour is config-driven: if OPENAI_API_KEY is set we stream from the real model;
+// if not, we fall back to the mock. That means anyone can clone the repo and run the
+// full UX with zero setup, and we never burn tokens while developing. Both paths
+// return the SAME plain-text stream, so the client read-loop is identical either way.
 
+import { streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
 import {
   buildPrompt,
   PLATFORMS,
@@ -12,11 +18,13 @@ import {
 } from "@/lib/prompts";
 import { mockStream } from "@/lib/mock";
 
+// Cheap, fast, good-enough for drafting. Swap for another OpenAI model id if you like.
+const MODEL = "gpt-4o-mini";
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const { source, platform, language, tone } = body ?? {};
 
-  // Basic validation now; we'll harden this with Zod when we add structured output.
   if (typeof source !== "string" || !source.trim()) {
     return new Response("Missing source text", { status: 400 });
   }
@@ -31,24 +39,21 @@ export async function POST(req: Request) {
   const input: PromptInput = { source, platform, language, tone };
   const prompt = buildPrompt(input);
 
-  // ── MOCK MODE (no API key yet) ──────────────────────────────────────────────
-  // We stream a placeholder so the full pipeline + UI work with zero cost.
-  // NEXT STEP — to go live, install `ai` + `@ai-sdk/openai`, then replace the two
-  // lines below with:
-  //
-  //   import { streamText } from "ai";
-  //   import { openai } from "@ai-sdk/openai";
-  //   const result = streamText({ model: openai("gpt-4o-mini"), prompt });
-  //   return result.toTextStreamResponse();
-  //
-  // The client doesn't change — both return a plain text stream.
-  void prompt; // built and ready; the real model will consume it next step
-  const stream = mockStream(input);
+  // ── No API key → mock fallback (keeps the app runnable for anyone) ──
+  if (!process.env.OPENAI_API_KEY) {
+    return new Response(mockStream(input), {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+  }
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
+  // ── Real model → stream the completion ──
+  const result = streamText({
+    model: openai(MODEL),
+    prompt,
   });
+
+  return result.toTextStreamResponse();
 }

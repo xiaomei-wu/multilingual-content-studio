@@ -42,3 +42,6 @@ next-env.d.ts
 
 # local tooling
 .omc/
+
+# keep the example committed (real .env.local stays ignored)
+!.env.example
