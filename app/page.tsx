@@ -35,7 +35,27 @@ import { GenerationModelSchema, validateGeneration } from "@/lib/generation";
 type Option = { value: string; label: string };
 type Draft = { title: string; body: string; hashtags: string };
 
+// POS-9: classified, user-facing failure so each card can show the right recovery copy.
+type Failure = {
+  kind: "rate_limit" | "partial" | "generic";
+  message: string;
+};
+
 const emptyDraft: Draft = { title: "", body: "", hashtags: "" };
+
+// Map a raw stream/fetch error into a friendly, classified failure. The /api/generate
+// route returns a 429 (with a "Rate limit exceeded" body) when the client is over the
+// limit; we detect that so the UI nudges the user to wait rather than just "failed".
+function classifyError(err: unknown): Failure {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  if (/rate.?limit|429|too many requests/i.test(message)) {
+    return {
+      kind: "rate_limit",
+      message: "You're generating too quickly. Wait a few seconds, then retry.",
+    };
+  }
+  return { kind: "generic", message: "Something went wrong generating this post." };
+}
 
 // The shared inputs every per-platform card streams against. The platform itself is
 // NOT here — each card fills that in from its own identity.
@@ -102,6 +122,15 @@ export default function Home() {
   const providerModels = getProvider(provider)?.models ?? [];
   const isLive = configured?.[provider] === true;
   const isBusy = selected.some((p) => loadingMap[p]);
+
+  // POS-9: bump a signal each time a generation batch finishes so the metrics panel
+  // refreshes with the just-recorded token usage / cost / latency.
+  const [metricsSignal, setMetricsSignal] = useState(0);
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (wasBusy.current && !isBusy) setMetricsSignal((n) => n + 1);
+    wasBusy.current = isBusy;
+  }, [isBusy]);
 
   const request: SharedRequest = useMemo(
     () => ({ source, language, tone, provider, model }),
@@ -233,7 +262,136 @@ export default function Home() {
           ))}
         </div>
       )}
+
+      <MetricsPanel refreshSignal={metricsSignal} />
     </main>
+  );
+}
+
+// POS-9: a simple, collapsible observability panel. Polls /api/metrics (refreshed each
+// time a generation batch finishes) and shows per-request token usage, cost, latency,
+// prompt-template version, and status — the production-thinking signal made visible.
+type Metric = {
+  id: string;
+  at: string;
+  platform: string;
+  provider: string;
+  model: string;
+  mode: "live" | "mock";
+  promptVersion: string;
+  status: "ok" | "partial" | "error" | "rate_limited";
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd: number | null;
+  latencyMs: number;
+};
+type MetricsSnapshot = {
+  recent: Metric[];
+  summary: {
+    count: number;
+    totalCostUsd: number;
+    avgLatencyMs: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+  };
+};
+
+const STATUS_STYLE: Record<Metric["status"], string> = {
+  ok: "text-green-700",
+  partial: "text-amber-700",
+  error: "text-red-700",
+  rate_limited: "text-amber-700",
+};
+
+function fmtCost(c: number | null): string {
+  if (c === null) return "—";
+  if (c === 0) return "$0";
+  return c < 0.01 ? `$${c.toFixed(5)}` : `$${c.toFixed(4)}`;
+}
+
+function MetricsPanel({ refreshSignal }: { refreshSignal: number }) {
+  const [data, setData] = useState<MetricsSnapshot | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/metrics")
+      .then((r) => r.json())
+      .then((d: MetricsSnapshot) => {
+        if (!cancelled) setData(d);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshSignal]);
+
+  const summary = data?.summary;
+  const recent = data?.recent ?? [];
+
+  return (
+    <section className="rounded-lg border border-gray-200">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between px-3 py-2 text-left"
+      >
+        <span className="text-sm font-semibold">
+          Request metrics
+          {summary && summary.count > 0 && (
+            <span className="ml-2 font-normal text-gray-500">
+              {summary.count} req · {fmtCost(summary.totalCostUsd)} · {summary.avgLatencyMs}ms avg
+            </span>
+          )}
+        </span>
+        <span className="text-xs text-gray-400">{open ? "Hide ▲" : "Show ▼"}</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-200 px-3 py-2">
+          {recent.length === 0 ? (
+            <p className="py-2 text-xs text-gray-400">
+              No generations yet — produce a post to see token usage, cost, and latency here.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-gray-500">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">Platform</th>
+                    <th className="py-1 pr-3 font-medium">Model</th>
+                    <th className="py-1 pr-3 font-medium">Mode</th>
+                    <th className="py-1 pr-3 font-medium">Prompt ver.</th>
+                    <th className="py-1 pr-3 font-medium">Tokens (in/out)</th>
+                    <th className="py-1 pr-3 font-medium">Cost</th>
+                    <th className="py-1 pr-3 font-medium">Latency</th>
+                    <th className="py-1 pr-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono">
+                  {recent.map((m) => (
+                    <tr key={m.id} className="border-t border-gray-100">
+                      <td className="py-1 pr-3">{m.platform}</td>
+                      <td className="py-1 pr-3">{m.model}</td>
+                      <td className="py-1 pr-3">{m.mode}</td>
+                      <td className="py-1 pr-3" title={m.promptVersion}>
+                        {m.promptVersion}
+                      </td>
+                      <td className="py-1 pr-3">
+                        {m.inputTokens ?? "—"}/{m.outputTokens ?? "—"}
+                      </td>
+                      <td className="py-1 pr-3">{fmtCost(m.costUsd)}</td>
+                      <td className="py-1 pr-3">{m.latencyMs}ms</td>
+                      <td className={`py-1 pr-3 ${STATUS_STYLE[m.status]}`}>{m.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -252,17 +410,28 @@ function PlatformCard({
 
   // The editable draft the user owns once this card's stream finishes.
   const [draft, setDraft] = useState<Draft>(emptyDraft);
+  // POS-9: surface a friendly, classified failure (e.g. rate limit vs. generic) and
+  // flag a partial generation (stream ended without a usable body) so the UI can offer
+  // a clean retry instead of a broken card.
+  const [failure, setFailure] = useState<Failure | null>(null);
 
-  const { object, submit, isLoading, stop, error } = useObject({
+  const { object, submit, isLoading, stop } = useObject({
     api: "/api/generate",
     schema: GenerationModelSchema,
-    onFinish({ object }) {
-      if (object) {
+    onError(err) {
+      setFailure(classifyError(err));
+    },
+    onFinish({ object, error }) {
+      if (object && object.body && object.body.trim()) {
         setDraft({
           title: object.title ?? "",
           body: object.body ?? "",
           hashtags: formatHashtags(object.hashtags ?? []),
         });
+        setFailure(null);
+      } else if (error || !object) {
+        // Stream finished but produced nothing usable → partial/failed generation.
+        setFailure({ kind: "partial", message: "The model returned an incomplete post." });
       }
     },
   });
@@ -272,6 +441,7 @@ function PlatformCard({
   // "Regenerate" button — never from an effect, so no cascading-render lint issues.
   const start = useCallback(() => {
     setDraft(emptyDraft);
+    setFailure(null);
     submit({ ...request, platform });
   }, [request, platform, submit]);
 
@@ -344,13 +514,30 @@ function PlatformCard({
       </div>
 
       <div className="space-y-3 p-3">
-        {error && (
-          <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
-            Something went wrong generating this post.{" "}
-            <button onClick={start} className="font-medium underline">
-              Try again
-            </button>
-          </p>
+        {failure && !isLoading && (
+          <div
+            className={`rounded-md px-3 py-2 text-xs ${
+              failure.kind === "rate_limit"
+                ? "bg-amber-50 text-amber-800"
+                : failure.kind === "partial"
+                  ? "bg-amber-50 text-amber-800"
+                  : "bg-red-50 text-red-700"
+            }`}
+          >
+            <p className="font-medium">
+              {failure.kind === "rate_limit"
+                ? "Rate limited"
+                : failure.kind === "partial"
+                  ? "Incomplete generation"
+                  : "Generation failed"}
+            </p>
+            <p>
+              {failure.message}{" "}
+              <button onClick={start} className="font-medium underline">
+                Try again
+              </button>
+            </p>
+          </div>
         )}
 
         {template.requiresTitle && (
