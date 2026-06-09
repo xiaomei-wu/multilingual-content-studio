@@ -141,6 +141,38 @@ All variables are optional; see [`.env.example`](./.env.example). Set them in
    provider's SDK is used directly (the "unless required" escape hatch).
 3. **Mock** — if neither is available, the request streams the mock model.
 
+### Where keys live (local vs. production)
+
+Keys are **never** committed — they live in environment variables, not in any
+tracked file:
+
+- **Local dev** — put them in `.env.local` (git-ignored). `cp .env.example .env.local`
+  and fill in one credential. Next.js loads it automatically on `pnpm dev`.
+- **Production / preview** — set them on the Vercel project, scoped per environment:
+
+  ```bash
+  vercel env add AI_GATEWAY_API_KEY production   # also: preview, development
+  vercel deploy --prod                           # env changes only apply to NEW deploys
+  ```
+
+  (Or Vercel dashboard → Project → Settings → Environment Variables.) An existing
+  deployment keeps the env it was built with, so **redeploy after adding a key.**
+  Pull prod vars into local with `vercel env pull .env.local`.
+
+### Which provider/model gets used
+
+That is **not** an env var — it's a runtime choice. The selectable providers and models
+are a code registry in [`lib/models.ts`](./lib/models.ts); the user picks one in the UI
+header dropdown, and the default is `openai/gpt-4o-mini` (`DEFAULT_PROVIDER` /
+`DEFAULT_MODEL`). The env credential only decides *whether* that selection runs live or
+falls back to the mock — it does not pick the model.
+
+> **Cost note for the public demo.** The public URL is intentionally credential-free so it
+> runs on the mock at zero cost. Attaching a live `AI_GATEWAY_API_KEY` to the **production**
+> environment makes every visitor generation a real, billable gateway call. Per-IP rate
+> limiting (POS-9) caps abuse, but for an open demo prefer enabling the live key only on
+> `preview`/`development`, or set a spend cap in the AI Gateway dashboard.
+
 ## Eval harness
 
 The eval harness is how we _prove_ generation works and measure the effect of prompt
