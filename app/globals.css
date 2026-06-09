@@ -2,6 +2,24 @@
 
 html,
 body {
-  background: #ffffff;
+  /* POS-19: gray-50 page bg creates depth for the white post cards. */
+  background: #f9fafb;
   color: #111111;
+}
+
+/* POS-19: indeterminate 2px streaming progress bar shown under a card header
+   while its post streams in. The bar slides across a faint track; the bar's
+   color is set inline per platform (LinkedIn / X / 小红书 brand color). */
+@keyframes mcs-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.mcs-progress-bar {
+  width: 25%;
+  animation: mcs-progress-slide 1.1s ease-in-out infinite;
 }

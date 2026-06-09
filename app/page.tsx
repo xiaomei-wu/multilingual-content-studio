@@ -43,6 +43,18 @@ type Failure = {
 
 const emptyDraft: Draft = { title: "", body: "", hashtags: "" };
 
+// POS-19: per-platform brand accent (8px dot in card + section headers).
+const PLATFORM_DOT: Record<Platform, string> = {
+  linkedin: "#0A66C2",
+  x: "#000000",
+  xiaohongshu: "#FF2442",
+};
+// POS-19: compact language chip shown in each card header (EN / DE / ZH).
+const LANGUAGE_SHORT: Record<Language, string> = { en: "EN", de: "DE", zh: "ZH" };
+
+// POS-19: a card's identity is now (platform × language), not platform alone.
+const cardKey = (platform: Platform, language: Language) => `${platform}:${language}`;
+
 // Map a raw stream/fetch error into a friendly, classified failure. The /api/generate
 // route returns a 429 (with a "Rate limit exceeded" body) when the client is over the
 // limit; we detect that so the UI nudges the user to wait rather than just "failed".
@@ -57,18 +69,17 @@ function classifyError(err: unknown): Failure {
   return { kind: "generic", message: "Something went wrong generating this post." };
 }
 
-// The shared inputs every per-platform card streams against. The platform itself is
-// NOT here — each card fills that in from its own identity.
+// The shared inputs every card streams against. Platform AND language are NOT here —
+// each card fills those in from its own (platform × language) identity.
 type SharedRequest = {
   source: string;
-  language: Language;
   tone: Tone;
   provider: ProviderId;
   model: string;
 };
 
 // Imperative handle each card exposes so the parent's "Generate" can fan out to
-// every selected platform at once without an effect/token dance.
+// every selected (platform × language) cell at once without an effect/token dance.
 type CardHandle = { start: () => void };
 
 // POS-15: an opaque, anonymous per-session id used ONLY so the server can count
@@ -105,14 +116,16 @@ export default function Home() {
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
   // POS-6: multiple platforms generate in parallel, one card each.
   const [selected, setSelected] = useState<Platform[]>(["linkedin"]);
-  const [language, setLanguage] = useState<Language>("en");
+  // POS-19: multi-language multi-select — all three on by default to surface the
+  // full multilingual value on first visit.
+  const [languages, setLanguages] = useState<Language[]>([...LANGUAGES]);
   const [tone, setTone] = useState<Tone>("professional");
   const [configured, setConfigured] = useState<Record<string, boolean> | null>(null);
 
-  // Imperative handles to each mounted card, keyed by platform.
-  const cardHandles = useRef(new Map<Platform, CardHandle>());
-  // Per-platform streaming state, reported up by the cards (idempotent by platform).
-  const [loadingMap, setLoadingMap] = useState<Partial<Record<Platform, boolean>>>({});
+  // Imperative handles to each mounted card, keyed by (platform × language).
+  const cardHandles = useRef(new Map<string, CardHandle>());
+  // Per-card streaming state, reported up by the cards (idempotent by card key).
+  const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetch("/api/config")
@@ -132,14 +145,23 @@ export default function Home() {
     setSelected((curr) =>
       curr.includes(p)
         ? curr.filter((x) => x !== p)
-        // keep the canonical PLATFORMS order so cards don't jump around.
+        // keep the canonical PLATFORMS order so sections don't jump around.
         : PLATFORMS.filter((x) => curr.includes(x) || x === p),
+    );
+  }
+
+  function toggleLanguage(l: Language) {
+    setLanguages((curr) =>
+      curr.includes(l)
+        ? curr.filter((x) => x !== l)
+        // keep the canonical LANGUAGES order so language columns stay stable.
+        : LANGUAGES.filter((x) => curr.includes(x) || x === l),
     );
   }
 
   const providerModels = getProvider(provider)?.models ?? [];
   const isLive = configured?.[provider] === true;
-  const isBusy = selected.some((p) => loadingMap[p]);
+  const isBusy = Object.values(loadingMap).some(Boolean);
 
   // POS-9: bump a signal each time a generation batch finishes so the metrics panel
   // refreshes with the just-recorded token usage / cost / latency.
@@ -151,73 +173,60 @@ export default function Home() {
   }, [isBusy]);
 
   const request: SharedRequest = useMemo(
-    () => ({ source, language, tone, provider, model }),
-    [source, language, tone, provider, model],
+    () => ({ source, tone, provider, model }),
+    [source, tone, provider, model],
   );
 
-  const canGenerate = source.trim().length > 0 && selected.length > 0;
+  // POS-19: the generation matrix — one card per selected platform × language.
+  const postCount = selected.length * languages.length;
+  const canGenerate =
+    source.trim().length > 0 && selected.length > 0 && languages.length > 0;
 
-  // Fan out: kick off one independent stream per selected platform, in parallel.
+  // Fan out: kick off one independent stream per (platform × language) cell.
   function generate() {
     if (!canGenerate) return;
-    selected.forEach((p) => cardHandles.current.get(p)?.start());
+    selected.forEach((p) =>
+      languages.forEach((l) => cardHandles.current.get(cardKey(p, l))?.start()),
+    );
   }
 
-  const registerCard = useCallback((p: Platform, handle: CardHandle | null) => {
-    if (handle) cardHandles.current.set(p, handle);
-    else cardHandles.current.delete(p);
+  const registerCard = useCallback((key: string, handle: CardHandle | null) => {
+    if (handle) cardHandles.current.set(key, handle);
+    else cardHandles.current.delete(key);
   }, []);
 
-  const onLoadingChange = useCallback((p: Platform, loading: boolean) => {
-    setLoadingMap((m) => ({ ...m, [p]: loading }));
+  const onLoadingChange = useCallback((key: string, loading: boolean) => {
+    setLoadingMap((m) => ({ ...m, [key]: loading }));
   }, []);
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
-      <header>
-        <h1 className="text-2xl font-bold">Multilingual Content Studio</h1>
-        <p className="text-sm text-gray-500">
-          Paste source text, pick your platforms, language &amp; tone — watch an
-          on-brand, editable post stream in live for each platform in parallel.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">
+            Multilingual Content Studio
+          </h1>
+          <p className="text-sm text-gray-500">
+            Paste once — get on-brand, editable posts for every platform and language,
+            streaming live in parallel.
+          </p>
+        </div>
+        <LiveBadge configured={configured} isLive={isLive} />
       </header>
 
-      <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
-        <Select
-          label="Provider"
-          value={provider}
-          onChange={changeProvider}
-          options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))}
-        />
-        <Select
-          label="Model"
-          value={model}
-          onChange={setModel}
-          options={providerModels.map((m) => ({ value: m.id, label: m.label }))}
-        />
-        <span
-          className={`mb-1 rounded-full px-2 py-1 text-xs font-medium ${
-            isLive ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-          }`}
-          title={isLive ? "Credential configured — real output" : "No credential for this provider — mock output"}
-        >
-          {configured === null ? "…" : isLive ? "● live" : "● mock"}
-        </span>
-      </div>
-
       <textarea
-        className="h-36 w-full rounded-lg border border-gray-300 p-3 text-sm"
+        className="h-36 w-full rounded-lg border border-gray-300 bg-white p-3 text-sm"
         placeholder="Paste an article, transcript, or rough notes…"
         value={source}
         onChange={(e) => setSource(e.target.value)}
       />
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Select
-          label="Language"
-          value={language}
-          onChange={(v) => setLanguage(v as Language)}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <ChipGroup
+          label="Languages"
           options={LANGUAGES.map((l) => ({ value: l, label: LANGUAGE_LABELS[l] }))}
+          isOn={(v) => languages.includes(v as Language)}
+          onToggle={(v) => toggleLanguage(v as Language)}
         />
         <Select
           label="Tone"
@@ -227,62 +236,120 @@ export default function Home() {
         />
       </div>
 
-      <div>
-        <span className="mb-1 block text-xs font-medium text-gray-600">Platforms</span>
-        <div className="flex flex-wrap gap-2">
-          {PLATFORMS.map((p) => {
-            const on = selected.includes(p);
-            return (
-              <button
-                key={p}
-                type="button"
-                aria-pressed={on}
-                onClick={() => togglePlatform(p)}
-                className={`rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
-                  on
-                    ? "border-black bg-black text-white"
-                    : "border-gray-300 bg-white text-gray-700 hover:border-gray-400"
-                }`}
-              >
-                {PLATFORM_LABELS[p]}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <ChipGroup
+        label="Platforms"
+        options={PLATFORMS.map((p) => ({ value: p, label: PLATFORM_LABELS[p] }))}
+        isOn={(v) => selected.includes(v as Platform)}
+        onToggle={(v) => togglePlatform(v as Platform)}
+      />
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={generate}
           disabled={!canGenerate}
-          className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+          className="rounded-lg bg-black px-5 py-2.5 text-sm font-medium text-white disabled:opacity-40"
         >
           {isBusy
             ? "Generating…"
-            : `Generate ${selected.length} post${selected.length === 1 ? "" : "s"}`}
+            : `Generate ${postCount} post${postCount === 1 ? "" : "s"}`}
         </button>
         {selected.length === 0 && (
           <span className="text-xs text-gray-400">Select at least one platform.</span>
         )}
+        {selected.length > 0 && languages.length === 0 && (
+          <span className="text-xs text-gray-400">Select at least one language.</span>
+        )}
       </div>
 
-      {selected.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {selected.map((p) => (
-            <PlatformCard
-              // Key by platform so a card keeps its own draft/stream identity.
-              key={p}
-              ref={(h) => registerCard(p, h)}
-              platform={p}
-              request={request}
-              onLoadingChange={onLoadingChange}
-            />
+      {postCount > 0 && (
+        <div className="space-y-8">
+          {selected.map((platform) => (
+            <section key={platform} className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ background: PLATFORM_DOT[platform] }}
+                />
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+                  {PLATFORM_LABELS[platform]}
+                </h2>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {languages.map((language) => {
+                  const key = cardKey(platform, language);
+                  return (
+                    <PlatformCard
+                      // Key by (platform × language) so each card keeps its own
+                      // draft / stream identity.
+                      key={key}
+                      cardId={key}
+                      platform={platform}
+                      language={language}
+                      request={request}
+                      onLoadingChange={onLoadingChange}
+                      ref={(h) => registerCard(key, h)}
+                    />
+                  );
+                })}
+              </div>
+            </section>
           ))}
         </div>
       )}
 
-      <MetricsPanel refreshSignal={metricsSignal} />
+      {/* POS-19: power-user controls — provider/model selection + observability —
+          live behind an Advanced toggle, hidden by default so first-run users see
+          only the content workflow. */}
+      <details className="rounded-lg border border-gray-200 bg-white">
+        <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-gray-600">
+          ⚙ Advanced
+        </summary>
+        <div className="space-y-4 border-t border-gray-200 px-3 py-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Select
+              label="Provider"
+              value={provider}
+              onChange={changeProvider}
+              options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))}
+            />
+            <Select
+              label="Model"
+              value={model}
+              onChange={setModel}
+              options={providerModels.map((m) => ({ value: m.id, label: m.label }))}
+            />
+          </div>
+          <MetricsPanel refreshSignal={metricsSignal} />
+        </div>
+      </details>
     </main>
+  );
+}
+
+// POS-19: a bordered status pill — emerald when a credential is configured (real
+// output), amber in the zero-cost mock path.
+function LiveBadge({
+  configured,
+  isLive,
+}: {
+  configured: Record<string, boolean> | null;
+  isLive: boolean;
+}) {
+  return (
+    <span
+      className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium ${
+        isLive
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border-amber-200 bg-amber-50 text-amber-700"
+      }`}
+      title={
+        isLive
+          ? "Credential configured — real output"
+          : "No credential for this provider — mock output"
+      }
+    >
+      {configured === null ? "…" : isLive ? "● live" : "● mock"}
+    </span>
   );
 }
 
@@ -436,13 +503,17 @@ function MetricsPanel({ refreshSignal }: { refreshSignal: number }) {
 
 function PlatformCard({
   platform,
+  language,
+  cardId,
   request,
   onLoadingChange,
   ref,
 }: {
   platform: Platform;
+  language: Language;
+  cardId: string;
   request: SharedRequest;
-  onLoadingChange: (platform: Platform, loading: boolean) => void;
+  onLoadingChange: (cardId: string, loading: boolean) => void;
   ref?: Ref<CardHandle>;
 }) {
   const template = platformTemplate(platform);
@@ -478,23 +549,24 @@ function PlatformCard({
     },
   });
 
-  // Start (or restart) this card's stream with the freshest shared inputs. Called
-  // both by the parent's "Generate" (via the imperative handle) and this card's own
-  // "Regenerate" button — never from an effect, so no cascading-render lint issues.
+  // Start (or restart) this card's stream with the freshest shared inputs plus this
+  // card's own (platform × language) identity. Called both by the parent's "Generate"
+  // (via the imperative handle) and this card's own "Regenerate" button — never from an
+  // effect, so no cascading-render lint issues.
   const start = useCallback(() => {
     setDraft(emptyDraft);
     setFailure(null);
-    submit({ ...request, platform });
-  }, [request, platform, submit]);
+    submit({ ...request, platform, language });
+  }, [request, platform, language, submit]);
 
   useImperativeHandle(ref, () => ({ start }), [start]);
 
   // Report streaming state up so the parent can show an aggregate "Generating…".
-  // On unmount (platform deselected) clear the flag so it can't get stuck busy.
+  // On unmount (cell deselected) clear the flag so it can't get stuck busy.
   useEffect(() => {
-    onLoadingChange(platform, isLoading);
-    return () => onLoadingChange(platform, false);
-  }, [isLoading, platform, onLoadingChange]);
+    onLoadingChange(cardId, isLoading);
+    return () => onLoadingChange(cardId, false);
+  }, [isLoading, cardId, onLoadingChange]);
 
   // While streaming, show the live partial object; once done, the user's draft.
   const liveTitle = isLoading ? object?.title ?? "" : draft.title;
@@ -527,17 +599,23 @@ function PlatformCard({
   }
 
   return (
-    <section className="flex flex-col rounded-lg border border-gray-200 bg-gray-50">
+    <section className="flex flex-col overflow-hidden rounded-lg bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2">
-        <span className="text-sm font-semibold">
+        <span className="flex items-center gap-2 text-sm font-semibold">
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{ background: PLATFORM_DOT[platform] }}
+          />
           {PLATFORM_LABELS[platform]}
-          {isLoading && <span className="ml-2 animate-pulse text-gray-400">streaming…</span>}
+          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-gray-500">
+            {LANGUAGE_SHORT[language]}
+          </span>
         </span>
         <div className="flex items-center gap-1">
           {isLoading ? (
             <button
               onClick={() => stop()}
-              className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-200"
+              className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-100"
             >
               Stop
             </button>
@@ -545,7 +623,7 @@ function PlatformCard({
             <>
               <button
                 onClick={start}
-                className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-200"
+                className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-100"
               >
                 Regenerate
               </button>
@@ -554,6 +632,16 @@ function PlatformCard({
           )}
         </div>
       </div>
+
+      {/* POS-19: 2px indeterminate progress bar while this card streams. */}
+      {isLoading && (
+        <div className="h-0.5 overflow-hidden bg-gray-100">
+          <div
+            className="mcs-progress-bar h-full"
+            style={{ background: PLATFORM_DOT[platform] }}
+          />
+        </div>
+      )}
 
       <div className="space-y-3 p-3">
         {failure && !isLoading && (
@@ -677,10 +765,52 @@ function CopyButton({ text }: { text: string }) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }}
-      className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-200"
+      className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-100"
     >
       {copied ? "Copied ✓" : "Copy"}
     </button>
+  );
+}
+
+// POS-19: multi-select toggle chips — the same interaction for Languages and
+// Platforms. Replaces the old single-value Language dropdown.
+function ChipGroup({
+  label,
+  options,
+  isOn,
+  onToggle,
+}: {
+  label: string;
+  options: Option[];
+  isOn: (value: string) => boolean;
+  onToggle: (value: string) => void;
+}) {
+  return (
+    <div>
+      <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-gray-400">
+        {label}
+      </span>
+      <div className="flex flex-wrap gap-2">
+        {options.map((o) => {
+          const on = isOn(o.value);
+          return (
+            <button
+              key={o.value}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onToggle(o.value)}
+              className={`rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                on
+                  ? "border-black bg-black text-white"
+                  : "border-gray-300 bg-white text-gray-700 hover:border-gray-400"
+              }`}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -699,7 +829,7 @@ function Select({
     <label className="block text-xs font-medium text-gray-600">
       {label}
       <select
-        className="mt-1 w-full rounded-lg border border-gray-300 p-2 text-sm text-black"
+        className="mt-1 w-full rounded-lg border border-gray-300 bg-white p-2 text-sm text-black"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
