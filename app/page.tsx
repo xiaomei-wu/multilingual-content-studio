@@ -21,20 +21,22 @@ import {
 } from "@/lib/prompts";
 
 type Option = { value: string; label: string };
+type PlatformState = { text: string; loading: boolean; error: string | null };
+
+const emptyResults = (): Record<Platform, PlatformState> =>
+  Object.fromEntries(
+    PLATFORMS.map((p) => [p, { text: "", loading: false, error: null }]),
+  ) as Record<Platform, PlatformState>;
 
 export default function Home() {
   const [source, setSource] = useState("");
   const [provider, setProvider] = useState<ProviderId>(DEFAULT_PROVIDER);
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
-  const [platform, setPlatform] = useState<Platform>("linkedin");
   const [language, setLanguage] = useState<Language>("en");
   const [tone, setTone] = useState<Tone>("professional");
-  const [output, setOutput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<Platform, PlatformState>>(emptyResults);
   const [configured, setConfigured] = useState<Record<string, boolean> | null>(null);
 
-  // Ask the server which providers have a key set, to show a live/mock badge.
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
@@ -42,7 +44,6 @@ export default function Home() {
       .catch(() => setConfigured(null));
   }, []);
 
-  // When provider changes, snap the model to that provider's first option.
   function changeProvider(id: string) {
     const p = getProvider(id);
     if (!p) return;
@@ -52,11 +53,11 @@ export default function Home() {
 
   const providerModels = getProvider(provider)?.models ?? [];
   const isLive = configured?.[provider] === true;
+  const anyLoading = PLATFORMS.some((p) => results[p].loading);
 
-  async function generate() {
-    setLoading(true);
-    setError(null);
-    setOutput("");
+  // Stream one platform into its own card.
+  async function generateOne(platform: Platform) {
+    setResults((prev) => ({ ...prev, [platform]: { text: "", loading: true, error: null } }));
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -71,25 +72,36 @@ export default function Home() {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        setOutput((prev) => prev + decoder.decode(value, { stream: true }));
+        const chunk = decoder.decode(value, { stream: true });
+        setResults((prev) => ({
+          ...prev,
+          [platform]: { ...prev[platform], text: prev[platform].text + chunk },
+        }));
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
+      setResults((prev) => ({
+        ...prev,
+        [platform]: { ...prev[platform], error: e instanceof Error ? e.message : "Failed" },
+      }));
     } finally {
-      setLoading(false);
+      setResults((prev) => ({ ...prev, [platform]: { ...prev[platform], loading: false } }));
     }
   }
 
+  // Fan out: fire all platforms at once; each streams independently.
+  function generateAll() {
+    PLATFORMS.forEach((p) => void generateOne(p));
+  }
+
   return (
-    <main className="mx-auto max-w-2xl space-y-6 p-6">
+    <main className="mx-auto max-w-5xl space-y-6 p-6">
       <header>
         <h1 className="text-2xl font-bold">Multilingual Content Studio</h1>
         <p className="text-sm text-gray-500">
-          Paste source text → pick a provider, platform &amp; language → stream a draft.
+          Paste source text → one click drafts LinkedIn, X &amp; 小红书 at once, streaming live.
         </p>
       </header>
 
-      {/* Provider + model + live badge */}
       <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
         <Select label="Provider" value={provider} onChange={changeProvider} options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))} />
         <Select label="Model" value={model} onChange={setModel} options={providerModels.map((m) => ({ value: m.id, label: m.label }))} />
@@ -104,35 +116,71 @@ export default function Home() {
       </div>
 
       <textarea
-        className="h-40 w-full rounded-lg border border-gray-300 p-3 text-sm"
+        className="h-36 w-full rounded-lg border border-gray-300 p-3 text-sm"
         placeholder="Paste an article, transcript, or rough notes…"
         value={source}
         onChange={(e) => setSource(e.target.value)}
       />
 
-      <div className="grid grid-cols-3 gap-3">
-        <Select label="Platform" value={platform} onChange={(v) => setPlatform(v as Platform)} options={PLATFORMS.map((p) => ({ value: p, label: PLATFORM_LABELS[p] }))} />
+      <div className="grid grid-cols-2 gap-3 sm:max-w-sm">
         <Select label="Language" value={language} onChange={(v) => setLanguage(v as Language)} options={LANGUAGES.map((l) => ({ value: l, label: LANGUAGE_LABELS[l] }))} />
         <Select label="Tone" value={tone} onChange={(v) => setTone(v as Tone)} options={TONES.map((t) => ({ value: t, label: TONE_LABELS[t] }))} />
       </div>
 
       <button
-        onClick={generate}
-        disabled={loading || !source.trim()}
+        onClick={generateAll}
+        disabled={anyLoading || !source.trim()}
         className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
       >
-        {loading ? "Generating…" : "Generate"}
+        {anyLoading ? "Generating…" : "Generate all platforms"}
       </button>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-
-      {(output || loading) && (
-        <article className="whitespace-pre-wrap rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-black">
-          {output}
-          {loading && <span className="animate-pulse">▌</span>}
-        </article>
-      )}
+      <div className="grid gap-4 md:grid-cols-3">
+        {PLATFORMS.map((p) => (
+          <PlatformCard key={p} title={PLATFORM_LABELS[p]} state={results[p]} />
+        ))}
+      </div>
     </main>
+  );
+}
+
+function PlatformCard({ title, state }: { title: string; state: PlatformState }) {
+  const { text, loading, error } = state;
+  const hasContent = text.length > 0;
+  return (
+    <section className="flex min-h-[12rem] flex-col rounded-lg border border-gray-200 bg-gray-50">
+      <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2">
+        <span className="text-sm font-semibold">{title}</span>
+        {hasContent && !loading && <CopyButton text={text} />}
+      </div>
+      <div className="flex-1 whitespace-pre-wrap p-3 text-sm text-black">
+        {error ? (
+          <span className="text-red-600">{error}</span>
+        ) : (
+          <>
+            {text}
+            {loading && <span className="animate-pulse">▌</span>}
+            {!hasContent && !loading && <span className="text-gray-400">—</span>}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-200"
+    >
+      {copied ? "Copied ✓" : "Copy"}
+    </button>
   );
 }
 
