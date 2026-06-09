@@ -1,7 +1,16 @@
 "use client";
 
 import { experimental_useObject as useObject } from "@ai-sdk/react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 import {
   PROVIDERS,
   getProvider,
@@ -28,6 +37,20 @@ type Draft = { title: string; body: string; hashtags: string };
 
 const emptyDraft: Draft = { title: "", body: "", hashtags: "" };
 
+// The shared inputs every per-platform card streams against. The platform itself is
+// NOT here — each card fills that in from its own identity.
+type SharedRequest = {
+  source: string;
+  language: Language;
+  tone: Tone;
+  provider: ProviderId;
+  model: string;
+};
+
+// Imperative handle each card exposes so the parent's "Generate" can fan out to
+// every selected platform at once without an effect/token dance.
+type CardHandle = { start: () => void };
+
 // hashtags <-> comma-separated string, the editable representation.
 const parseHashtags = (s: string): string[] =>
   s.split(",").map((t) => t.replace(/^#+/, "").trim()).filter(Boolean);
@@ -42,28 +65,16 @@ export default function Home() {
   const [source, setSource] = useState("");
   const [provider, setProvider] = useState<ProviderId>(DEFAULT_PROVIDER);
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
-  const [platform, setPlatform] = useState<Platform>("linkedin");
+  // POS-6: multiple platforms generate in parallel, one card each.
+  const [selected, setSelected] = useState<Platform[]>(["linkedin"]);
   const [language, setLanguage] = useState<Language>("en");
   const [tone, setTone] = useState<Tone>("professional");
   const [configured, setConfigured] = useState<Record<string, boolean> | null>(null);
 
-  // The editable draft the user owns once streaming finishes.
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
-
-  const { object, submit, isLoading, stop, error } = useObject({
-    api: "/api/generate",
-    schema: GenerationModelSchema,
-    onFinish({ object }) {
-      // Seed the editable draft from the final, validated object.
-      if (object) {
-        setDraft({
-          title: object.title ?? "",
-          body: object.body ?? "",
-          hashtags: formatHashtags(object.hashtags ?? []),
-        });
-      }
-    },
-  });
+  // Imperative handles to each mounted card, keyed by platform.
+  const cardHandles = useRef(new Map<Platform, CardHandle>());
+  // Per-platform streaming state, reported up by the cards (idempotent by platform).
+  const [loadingMap, setLoadingMap] = useState<Partial<Record<Platform, boolean>>>({});
 
   useEffect(() => {
     fetch("/api/config")
@@ -79,42 +90,48 @@ export default function Home() {
     setModel(p.models[0].id);
   }
 
-  const providerModels = getProvider(provider)?.models ?? [];
-  const isLive = configured?.[provider] === true;
-  const template = platformTemplate(platform);
-
-  // While streaming, show the live partial object; once done, the user's draft.
-  const liveTitle = isLoading ? object?.title ?? "" : draft.title;
-  const liveBody = isLoading ? object?.body ?? "" : draft.body;
-  const liveHashtags = isLoading ? formatHashtags(object?.hashtags ?? []) : draft.hashtags;
-  const hasOutput = liveBody.length > 0 || liveTitle.length > 0 || liveHashtags.length > 0;
-
-  // Validate the current (editable) draft against the platform's POS-4 constraints.
-  const validation = useMemo(() => {
-    if (isLoading || !draft.body.trim()) return null;
-    return validateGeneration(
-      {
-        title: draft.title.trim() || undefined,
-        body: draft.body,
-        hashtags: parseHashtags(draft.hashtags),
-      },
-      platform,
+  function togglePlatform(p: Platform) {
+    setSelected((curr) =>
+      curr.includes(p)
+        ? curr.filter((x) => x !== p)
+        // keep the canonical PLATFORMS order so cards don't jump around.
+        : PLATFORMS.filter((x) => curr.includes(x) || x === p),
     );
-  }, [isLoading, draft, platform]);
-
-  function generate() {
-    if (!source.trim() || isLoading) return;
-    setDraft(emptyDraft);
-    submit({ source, platform, language, tone, provider, model });
   }
 
+  const providerModels = getProvider(provider)?.models ?? [];
+  const isLive = configured?.[provider] === true;
+  const isBusy = selected.some((p) => loadingMap[p]);
+
+  const request: SharedRequest = useMemo(
+    () => ({ source, language, tone, provider, model }),
+    [source, language, tone, provider, model],
+  );
+
+  const canGenerate = source.trim().length > 0 && selected.length > 0;
+
+  // Fan out: kick off one independent stream per selected platform, in parallel.
+  function generate() {
+    if (!canGenerate) return;
+    selected.forEach((p) => cardHandles.current.get(p)?.start());
+  }
+
+  const registerCard = useCallback((p: Platform, handle: CardHandle | null) => {
+    if (handle) cardHandles.current.set(p, handle);
+    else cardHandles.current.delete(p);
+  }, []);
+
+  const onLoadingChange = useCallback((p: Platform, loading: boolean) => {
+    setLoadingMap((m) => ({ ...m, [p]: loading }));
+  }, []);
+
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-6">
+    <main className="mx-auto max-w-5xl space-y-6 p-6">
       <header>
         <h1 className="text-2xl font-bold">Multilingual Content Studio</h1>
         <p className="text-sm text-gray-500">
-          Paste source text, pick a platform, language &amp; tone — watch an on-brand,
-          editable post stream in live.
+          Paste source text, pick your platforms, language &amp; tone — watch an
+          on-brand, editable post stream in live for each platform in parallel.
         </p>
       </header>
 
@@ -148,13 +165,7 @@ export default function Home() {
         onChange={(e) => setSource(e.target.value)}
       />
 
-      <div className="grid grid-cols-3 gap-3">
-        <Select
-          label="Platform"
-          value={platform}
-          onChange={(v) => setPlatform(v as Platform)}
-          options={PLATFORMS.map((p) => ({ value: p, label: PLATFORM_LABELS[p] }))}
-        />
+      <div className="grid gap-3 sm:grid-cols-2">
         <Select
           label="Language"
           value={language}
@@ -169,86 +180,184 @@ export default function Home() {
         />
       </div>
 
+      <div>
+        <span className="mb-1 block text-xs font-medium text-gray-600">Platforms</span>
+        <div className="flex flex-wrap gap-2">
+          {PLATFORMS.map((p) => {
+            const on = selected.includes(p);
+            return (
+              <button
+                key={p}
+                type="button"
+                aria-pressed={on}
+                onClick={() => togglePlatform(p)}
+                className={`rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  on
+                    ? "border-black bg-black text-white"
+                    : "border-gray-300 bg-white text-gray-700 hover:border-gray-400"
+                }`}
+              >
+                {PLATFORM_LABELS[p]}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="flex items-center gap-3">
         <button
           onClick={generate}
-          disabled={isLoading || !source.trim()}
+          disabled={!canGenerate}
           className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
         >
-          {isLoading ? "Generating…" : "Generate post"}
+          {isBusy
+            ? "Generating…"
+            : `Generate ${selected.length} post${selected.length === 1 ? "" : "s"}`}
         </button>
-        {isLoading && (
-          <button
-            onClick={() => stop()}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700"
-          >
-            Stop
-          </button>
+        {selected.length === 0 && (
+          <span className="text-xs text-gray-400">Select at least one platform.</span>
         )}
       </div>
 
-      {error && (
-        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-          Something went wrong generating the post. Please try again.
-        </p>
-      )}
-
-      {(hasOutput || isLoading) && (
-        <OutputCard
-          platform={platform}
-          template={template}
-          isLoading={isLoading}
-          title={liveTitle}
-          body={liveBody}
-          hashtags={liveHashtags}
-          validation={validation}
-          onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
-        />
+      {selected.length > 0 && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {selected.map((p) => (
+            <PlatformCard
+              // Key by platform so a card keeps its own draft/stream identity.
+              key={p}
+              ref={(h) => registerCard(p, h)}
+              platform={p}
+              request={request}
+              onLoadingChange={onLoadingChange}
+            />
+          ))}
+        </div>
       )}
     </main>
   );
 }
 
-function OutputCard({
+function PlatformCard({
   platform,
-  template,
-  isLoading,
-  title,
-  body,
-  hashtags,
-  validation,
-  onChange,
+  request,
+  onLoadingChange,
+  ref,
 }: {
   platform: Platform;
-  template: ReturnType<typeof platformTemplate>;
-  isLoading: boolean;
-  title: string;
-  body: string;
-  hashtags: string;
-  validation: ReturnType<typeof validateGeneration> | null;
-  onChange: (patch: Partial<Draft>) => void;
+  request: SharedRequest;
+  onLoadingChange: (platform: Platform, loading: boolean) => void;
+  ref?: Ref<CardHandle>;
 }) {
-  const overLimit = template.maxChars !== undefined && body.length > template.maxChars;
-  const copyText = [title.trim(), body.trim(), formatCopyHashtags(hashtags)]
+  const template = platformTemplate(platform);
+
+  // The editable draft the user owns once this card's stream finishes.
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
+
+  const { object, submit, isLoading, stop, error } = useObject({
+    api: "/api/generate",
+    schema: GenerationModelSchema,
+    onFinish({ object }) {
+      if (object) {
+        setDraft({
+          title: object.title ?? "",
+          body: object.body ?? "",
+          hashtags: formatHashtags(object.hashtags ?? []),
+        });
+      }
+    },
+  });
+
+  // Start (or restart) this card's stream with the freshest shared inputs. Called
+  // both by the parent's "Generate" (via the imperative handle) and this card's own
+  // "Regenerate" button — never from an effect, so no cascading-render lint issues.
+  const start = useCallback(() => {
+    setDraft(emptyDraft);
+    submit({ ...request, platform });
+  }, [request, platform, submit]);
+
+  useImperativeHandle(ref, () => ({ start }), [start]);
+
+  // Report streaming state up so the parent can show an aggregate "Generating…".
+  // On unmount (platform deselected) clear the flag so it can't get stuck busy.
+  useEffect(() => {
+    onLoadingChange(platform, isLoading);
+    return () => onLoadingChange(platform, false);
+  }, [isLoading, platform, onLoadingChange]);
+
+  // While streaming, show the live partial object; once done, the user's draft.
+  const liveTitle = isLoading ? object?.title ?? "" : draft.title;
+  const liveBody = isLoading ? object?.body ?? "" : draft.body;
+  const liveHashtags = isLoading
+    ? formatHashtags(object?.hashtags ?? [])
+    : draft.hashtags;
+
+  // Validate the current (editable) draft against the platform's POS-4 constraints.
+  const validation = useMemo(() => {
+    if (isLoading || !draft.body.trim()) return null;
+    return validateGeneration(
+      {
+        title: draft.title.trim() || undefined,
+        body: draft.body,
+        hashtags: parseHashtags(draft.hashtags),
+      },
+      platform,
+    );
+  }, [isLoading, draft, platform]);
+
+  const overLimit =
+    template.maxChars !== undefined && liveBody.length > template.maxChars;
+  const copyText = [liveTitle.trim(), liveBody.trim(), formatCopyHashtags(liveHashtags)]
     .filter(Boolean)
     .join("\n\n");
 
+  function onChange(patch: Partial<Draft>) {
+    setDraft((d) => ({ ...d, ...patch }));
+  }
+
   return (
-    <section className="rounded-lg border border-gray-200 bg-gray-50">
+    <section className="flex flex-col rounded-lg border border-gray-200 bg-gray-50">
       <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2">
         <span className="text-sm font-semibold">
           {PLATFORM_LABELS[platform]}
           {isLoading && <span className="ml-2 animate-pulse text-gray-400">streaming…</span>}
         </span>
-        {!isLoading && body.length > 0 && <CopyButton text={copyText} />}
+        <div className="flex items-center gap-1">
+          {isLoading ? (
+            <button
+              onClick={() => stop()}
+              className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-200"
+            >
+              Stop
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={start}
+                className="rounded px-2 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-200"
+              >
+                Regenerate
+              </button>
+              {liveBody.length > 0 && <CopyButton text={copyText} />}
+            </>
+          )}
+        </div>
       </div>
 
       <div className="space-y-3 p-3">
+        {error && (
+          <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
+            Something went wrong generating this post.{" "}
+            <button onClick={start} className="font-medium underline">
+              Try again
+            </button>
+          </p>
+        )}
+
         {template.requiresTitle && (
           <Field label="Title">
             <input
               className="w-full rounded-md border border-gray-300 bg-white p-2 text-sm text-black"
-              value={title}
+              value={liveTitle}
               disabled={isLoading}
               placeholder={isLoading ? "" : "Add a title…"}
               onChange={(e) => onChange({ title: e.target.value })}
@@ -261,16 +370,16 @@ function OutputCard({
           hint={
             template.maxChars !== undefined ? (
               <span className={overLimit ? "text-red-600" : "text-gray-400"}>
-                {body.length}/{template.maxChars}
+                {liveBody.length}/{template.maxChars}
               </span>
             ) : (
-              <span className="text-gray-400">{body.length} chars</span>
+              <span className="text-gray-400">{liveBody.length} chars</span>
             )
           }
         >
           <textarea
             className="h-48 w-full whitespace-pre-wrap rounded-md border border-gray-300 bg-white p-2 text-sm text-black"
-            value={body}
+            value={liveBody}
             disabled={isLoading}
             placeholder={isLoading ? "" : "Post body…"}
             onChange={(e) => onChange({ body: e.target.value })}
@@ -279,11 +388,15 @@ function OutputCard({
 
         <Field
           label="Hashtags"
-          hint={<span className="text-gray-400">{template.hashtags.min}–{template.hashtags.max} · comma-separated</span>}
+          hint={
+            <span className="text-gray-400">
+              {template.hashtags.min}–{template.hashtags.max} · comma-separated
+            </span>
+          }
         >
           <input
             className="w-full rounded-md border border-gray-300 bg-white p-2 text-sm text-black"
-            value={hashtags}
+            value={liveHashtags}
             disabled={isLoading}
             placeholder={isLoading ? "" : "tag1, tag2"}
             onChange={(e) => onChange({ hashtags: e.target.value })}
@@ -291,9 +404,7 @@ function OutputCard({
         </Field>
 
         {validation && (
-          <p
-            className={`text-xs ${validation.ok ? "text-green-700" : "text-amber-700"}`}
-          >
+          <p className={`text-xs ${validation.ok ? "text-green-700" : "text-amber-700"}`}>
             {validation.ok
               ? `✓ Meets ${PLATFORM_LABELS[platform]} guidelines`
               : `⚠ ${validation.errors.join(" · ")}`}
@@ -314,8 +425,8 @@ function Field({
   children,
 }: {
   label: string;
-  hint?: React.ReactNode;
-  children: React.ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div>
