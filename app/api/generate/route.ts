@@ -23,6 +23,7 @@ import { GenerationModelSchema } from "@/lib/generation";
 import { mockObjectStream } from "@/lib/mock";
 import { generationLimiter, clientKeyFromHeaders } from "@/lib/rate-limit";
 import { recordMetric, type GenerationStatus } from "@/lib/metrics";
+import { recordActivation } from "@/lib/activation";
 
 // Streaming generations can run longer than a default request; give them room.
 export const maxDuration = 30;
@@ -60,6 +61,17 @@ function isRateLimitError(error: unknown): boolean {
   return typeof e.message === "string" && /rate.?limit|429|too many requests/i.test(e.message);
 }
 
+// POS-15: the opaque, client-generated session id (sessionStorage UUID) used to count
+// distinct activated sessions. We sanitize defensively — bound the length and accept
+// only id-shaped characters — so a junk header can't poison the activation Set. No PII:
+// this is a random id the browser made up, not an IP or fingerprint.
+function sessionIdFromHeaders(headers: Headers): string | undefined {
+  const raw = headers.get("x-session-id");
+  if (!raw) return undefined;
+  const id = raw.trim().slice(0, 100);
+  return /^[A-Za-z0-9_-]{8,100}$/.test(id) ? id : undefined;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -82,6 +94,7 @@ export async function POST(req: Request) {
   const { system, user, meta } = buildPrompt(input);
   const promptVersion = meta.version;
   const requestId = crypto.randomUUID();
+  const sessionId = sessionIdFromHeaders(req.headers);
 
   // --- Rate limit: reject early, before spending a model call ----------------------
   const rl = generationLimiter.check(clientKeyFromHeaders(req.headers));
@@ -142,6 +155,7 @@ export async function POST(req: Request) {
       promptVersion,
       promptText: `${system}\n${user}`,
       start,
+      sessionId,
     });
     return new Response(toClient, {
       headers: { ...baseHeaders, "x-generation-mode": "mock" },
@@ -174,6 +188,8 @@ export async function POST(req: Request) {
     onFinish({ usage, error }) {
       // `error` set (e.g. final object failed schema validation) → partial generation.
       const status: GenerationStatus = error ? "partial" : "ok";
+      // POS-15: a clean "ok" finish is a completed generation → activation signal.
+      if (status === "ok") recordActivation(sessionId);
       recordMetric({
         id: requestId,
         platform,
@@ -206,6 +222,7 @@ interface MockMeterContext {
   promptVersion: string;
   promptText: string;
   start: number;
+  sessionId?: string;
 }
 
 /** Drain the metering branch of the mock stream and record a metric on completion. */
@@ -224,6 +241,9 @@ async function meterMockStream(
   } catch {
     // Mock never errors, but never let metering reject.
   }
+  // POS-15: the mock stream always completes → counts as a completed generation,
+  // so the activation counter works on the zero-credential path too.
+  recordActivation(ctx.sessionId);
   recordMetric({
     id: ctx.requestId,
     platform: ctx.platform,

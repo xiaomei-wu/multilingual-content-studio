@@ -11,7 +11,11 @@ Zod, and the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway).
 
 > The public demo runs against a zero-cost **mock** model, so the full UX — multi-platform
 > parallel streaming, per-card editing, tone/language switches — works without any key or
-> spend. Add an `AI_GATEWAY_API_KEY` to stream from a real model through the exact same pipeline.
+> spend. The mock is **self-disclosing**: every card is labeled `[MOCK · …]` and says in its
+> body *"…no real model was called. Add an API key … and real output streams through this exact
+> same pipeline."* So the demo is free **and** the exact production path — add an
+> `AI_GATEWAY_API_KEY` and real output streams through that same pipeline. Real-model quality is
+> proven separately by the eval harness (**100% / 10-of-10** — see below).
 
 ## 60-second demo
 
@@ -49,7 +53,7 @@ flowchart TD
   subgraph Server["Next.js server (App Router on Vercel)"]
     GEN["POST /api/generate<br/>Zod validate → buildPrompt → stream"]
     CFG["GET /api/config<br/>which providers are live (booleans)"]
-    MET["GET /api/metrics<br/>cost · latency · token usage"]
+    MET["GET /api/metrics<br/>cost · latency · tokens · activation"]
     RL["rate-limit.ts<br/>per-client 429 + Retry-After"]
     RESOLVE["resolve-model.ts<br/>gateway-first resolution"]
     PROMPTS["prompts.ts<br/>versioned (platform × language × tone)"]
@@ -86,12 +90,35 @@ parses them identically and the app is unchanged either way.
 | `app/page.tsx` | Three per-platform cards, each streaming + independently editable. |
 | `app/api/generate/route.ts` | Zod-validated structured streaming endpoint (+ rate limit, metrics, prompt versioning). |
 | `app/api/config/route.ts` | Reports which providers are "live" (booleans only). |
-| `app/api/metrics/route.ts` | Per-request cost / latency / token usage. |
+| `app/api/metrics/route.ts` | Per-request cost / latency / token usage + activation counts. |
 | `lib/models.ts` | Client-safe provider/model registry (no SDK imports). |
 | `lib/resolve-model.ts` | Server-only gateway-first model resolution. |
 | `lib/prompts.ts` | Versioned, composable prompt builder. |
 | `lib/mock.ts` | Zero-cost streaming mock model. |
+| `lib/activation.ts` | Privacy-safe activation counter (completed generations + distinct sessions). |
 | `lib/eval/` | Eval harness — proves generation quality (see below). |
+
+### Activation metric (launch North Star)
+
+`GET /api/metrics` returns an `activation` block alongside the per-request cost/latency/token
+metrics:
+
+```json
+"activation": { "completedGenerations": 4, "activatedSessions": 2 }
+```
+
+- **`completedGenerations`** — total generations that finished successfully (any session, both
+  the live and zero-cost mock paths).
+- **`activatedSessions`** — distinct sessions that completed ≥1 generation. This is the launch
+  success metric: *demo sessions that activate during launch week*.
+
+It's **privacy-safe by construction**: the only identifier involved is an opaque, anonymous
+session id the browser generates (`crypto.randomUUID()` in `sessionStorage`) and sends as
+`x-session-id`. No IP, no fingerprint, no PII — the server holds it only to de-dupe distinct
+sessions, and `/api/metrics` exposes **counts, never ids**. State is in-memory + per-instance
+(same model as the metrics ring and rate limiter): no persistence, no new infra, zero cost. The
+counts surface live in the in-app **Request metrics** panel. A production deploy would swap the
+in-memory tracker for an aggregate analytics counter behind the same `recordActivation()` call.
 
 > Persistence (a database layer) is **off the current MVP path** and intentionally not
 > part of this branch — generation and review are the focus first.

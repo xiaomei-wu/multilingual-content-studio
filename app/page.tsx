@@ -71,6 +71,24 @@ type SharedRequest = {
 // every selected platform at once without an effect/token dance.
 type CardHandle = { start: () => void };
 
+// POS-15: an opaque, anonymous per-session id used ONLY so the server can count
+// distinct activated sessions (the launch North Star). A random UUID kept in
+// sessionStorage — no PII, never sent anywhere but our own /api/generate. Created
+// lazily on the first generation; falls back to an ephemeral id if storage is blocked.
+let cachedSessionId: string | undefined;
+function getSessionId(): string {
+  if (cachedSessionId) return cachedSessionId;
+  try {
+    const existing = sessionStorage.getItem("mcs.sessionId");
+    if (existing) return (cachedSessionId = existing);
+    const id = crypto.randomUUID();
+    sessionStorage.setItem("mcs.sessionId", id);
+    return (cachedSessionId = id);
+  } catch {
+    return (cachedSessionId ??= crypto.randomUUID());
+  }
+}
+
 // hashtags <-> comma-separated string, the editable representation.
 const parseHashtags = (s: string): string[] =>
   s.split(",").map((t) => t.replace(/^#+/, "").trim()).filter(Boolean);
@@ -294,6 +312,11 @@ type MetricsSnapshot = {
     totalInputTokens: number;
     totalOutputTokens: number;
   };
+  // POS-15: privacy-safe activation aggregate — the launch North Star.
+  activation: {
+    completedGenerations: number;
+    activatedSessions: number;
+  };
 };
 
 const STATUS_STYLE: Record<Metric["status"], string> = {
@@ -328,6 +351,7 @@ function MetricsPanel({ refreshSignal }: { refreshSignal: number }) {
 
   const summary = data?.summary;
   const recent = data?.recent ?? [];
+  const activation = data?.activation;
 
   return (
     <section className="rounded-lg border border-gray-200">
@@ -349,6 +373,21 @@ function MetricsPanel({ refreshSignal }: { refreshSignal: number }) {
 
       {open && (
         <div className="border-t border-gray-200 px-3 py-2">
+          {activation && (
+            <div className="mb-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-600">
+              <span>
+                <span className="font-semibold text-gray-900">{activation.activatedSessions}</span>{" "}
+                activated session{activation.activatedSessions === 1 ? "" : "s"}
+              </span>
+              <span>
+                <span className="font-semibold text-gray-900">
+                  {activation.completedGenerations}
+                </span>{" "}
+                generation{activation.completedGenerations === 1 ? "" : "s"} completed
+              </span>
+              <span className="text-gray-400">privacy-safe · counts only, no PII</span>
+            </div>
+          )}
           {recent.length === 0 ? (
             <p className="py-2 text-xs text-gray-400">
               No generations yet — produce a post to see token usage, cost, and latency here.
@@ -418,6 +457,9 @@ function PlatformCard({
   const { object, submit, isLoading, stop } = useObject({
     api: "/api/generate",
     schema: GenerationModelSchema,
+    // POS-15: tag each generation with the anonymous session id so the server can
+    // count distinct activated sessions. Resolved at request time (client-only).
+    headers: () => ({ "x-session-id": getSessionId() }),
     onError(err) {
       setFailure(classifyError(err));
     },
