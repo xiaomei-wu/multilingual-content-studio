@@ -189,7 +189,7 @@ export function buildPrompt({ source, platform, language, tone }: PromptInput): 
     `Write the post in ${languageT.name}.`,
     toneT.instructions,
     "Base it strictly on the source material below. Capture its key points; do not invent facts.",
-    "Return only the post text — no preamble, no explanation.",
+    "Put the publish-ready post in the body field, any hashtags in the hashtags field (without '#'), and a title only if the platform needs one. No preamble or explanation.",
     "",
     "--- SOURCE ---",
     source.trim(),

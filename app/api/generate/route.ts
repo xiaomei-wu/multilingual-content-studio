@@ -1,18 +1,23 @@
 // app/api/generate/route.ts
-// Server-side streaming endpoint. The browser ONLY ever talks to this route — the
-// model call and any API keys never reach the client. (Interview talking point #1.)
+// Server-side STRUCTURED streaming endpoint. The browser only ever talks to this
+// route — the model call and any API keys never reach the client.
 //
-// The request is validated with Zod against the prompt registry. Provider + model are
-// chosen by the user; if a live credential exists (AI Gateway, or that provider's own
-// key as a fallback) we stream from the model, otherwise we fall back to the mock.
-// Both paths return the SAME plain-text stream, so the client is unchanged.
+// We stream a typed object (title? + body + hashtags) with `streamObject` (AI SDK v6)
+// validated against the shared Zod schema from POS-4. Both the real-model path and the
+// no-credential mock path emit the SAME wire format — growing JSON text — so the
+// client (`useObject`) parses them identically and the app works end to end with or
+// without an API key.
 
-import { streamText } from "ai";
+import { streamObject } from "ai";
 import { z } from "zod";
 import { resolveModel } from "@/lib/resolve-model";
 import { PROVIDERS, isValidSelection, type ProviderId } from "@/lib/models";
 import { buildPrompt, PLATFORMS, LANGUAGES, TONES } from "@/lib/prompts";
-import { mockStream } from "@/lib/mock";
+import { GenerationModelSchema } from "@/lib/generation";
+import { mockObjectStream } from "@/lib/mock";
+
+// Streaming generations can run longer than a default request; give them room.
+export const maxDuration = 30;
 
 const PROVIDER_IDS = PROVIDERS.map((p) => p.id) as [string, ...string[]];
 
@@ -34,21 +39,18 @@ export async function POST(req: Request) {
   const json = await req.json().catch(() => null);
   const parsed = GenerateRequest.safeParse(json);
   if (!parsed.success) {
-    return Response.json(
-      { error: z.treeifyError(parsed.error) },
-      { status: 400 },
-    );
+    return Response.json({ error: z.treeifyError(parsed.error) }, { status: 400 });
   }
 
   const { source, platform, language, tone, provider, model } = parsed.data;
   const input = { source, platform, language, tone };
   const { system, user } = buildPrompt(input);
 
-  // No live credential (no gateway + no provider key) → stream the mock so the app
-  // still works end to end with zero cost.
+  // No live credential (no gateway + no provider key) → stream the mock object so the
+  // app still works end to end with zero cost.
   const resolved = resolveModel(provider as ProviderId, model);
   if (!resolved) {
-    return new Response(mockStream(input), {
+    return new Response(mockObjectStream(input), {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-store",
@@ -56,7 +58,12 @@ export async function POST(req: Request) {
     });
   }
 
-  // Real model → stream from the chosen provider (via gateway or provider SDK).
-  const result = streamText({ model: resolved, system, prompt: user });
+  // Real model → stream a structured object validated against the shared schema.
+  const result = streamObject({
+    model: resolved,
+    schema: GenerationModelSchema,
+    system,
+    prompt: user,
+  });
   return result.toTextStreamResponse();
 }

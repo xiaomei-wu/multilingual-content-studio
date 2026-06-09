@@ -14,23 +14,51 @@ import { z } from "zod";
 import { platformTemplate, type Platform } from "./prompts";
 
 // Base shape, platform-agnostic. `.catch`/`.default` keep parsing resilient.
+// The `.describe()` lines double as instructions to the model: `streamObject`
+// feeds them to the provider so each field is filled with the right content
+// (e.g. hashtags land in `hashtags`, not glued onto the end of `body`).
 export const GenerationOutputSchema = z.object({
   /** Optional headline (required for 小红书; see the platform-aware schema). */
   title: z
     .string()
     .trim()
+    .nullable()
     .optional()
+    .describe("Short headline for the post. Only platforms that need a title (e.g. 小红书) should set this.")
     .transform((t) => (t ? t : undefined)),
   /** The post body — the one field every platform must produce. */
-  body: z.string().trim().min(1, "Generation must include a non-empty body"),
+  body: z
+    .string()
+    .trim()
+    .min(1, "Generation must include a non-empty body")
+    .describe("The full post text, ready to publish. Do NOT include hashtags here — put those in the hashtags field."),
   /** Hashtags WITHOUT the leading '#'. */
   hashtags: z
     .array(z.string().trim().min(1))
     .default([])
+    .describe("Relevant hashtags, each WITHOUT the leading '#'.")
     .transform((tags) => tags.map((t) => t.replace(/^#+/, "").trim()).filter(Boolean)),
 });
 
 export type GenerationOutput = z.infer<typeof GenerationOutputSchema>;
+
+/**
+ * The schema we hand to `streamObject` (server) and `useObject` (client). It mirrors
+ * the base shape but is shaped for STRICT structured-output mode: OpenAI requires every
+ * property to be present in `required`, so `title` is `.nullable()` (always present, may
+ * be null) rather than `.optional()` (omitted from `required`, which OpenAI rejects).
+ * Kept transform-free so the generated JSON Schema stays clean across providers.
+ */
+export const GenerationModelSchema = z.object({
+  title: z
+    .string()
+    .nullable()
+    .describe("Short headline. Set to null unless the platform needs a title (e.g. 小红书)."),
+  body: z.string().describe("The full publish-ready post text. Do NOT include hashtags here."),
+  hashtags: z.array(z.string()).describe("Relevant hashtags, each WITHOUT the leading '#'. May be empty."),
+});
+
+export type GenerationModelOutput = z.infer<typeof GenerationModelSchema>;
 
 /**
  * Platform-aware schema: layers the platform template's structural constraints
