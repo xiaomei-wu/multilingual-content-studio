@@ -57,9 +57,41 @@ return the identical plain-text stream, so the client code is unchanged either w
 | `lib/resolve-model.ts` | Server-only gateway-first model resolution. |
 | `lib/prompts.ts` | Versioned, composable prompt builder. |
 | `lib/mock.ts` | Zero-cost streaming mock model. |
+| `lib/eval/` | Eval harness — proves generation quality (see below). |
 
 > Persistence (a database layer) is **off the current MVP path** and intentionally not
 > part of this branch — generation and review are the focus first.
+
+## Eval harness
+
+The eval harness is how we _prove_ generation works and measure the effect of prompt
+changes. It runs 10 fixed, varied inputs (`lib/eval/dataset.ts` — across length, topic,
+and the en/de/zh languages × every platform) through `generate → rule checks → LLM judge`
+and prints a **pass-rate %**.
+
+```bash
+pnpm eval            # live if a credential is present, else a mock dry run
+pnpm eval --mock     # force the offline mock pipeline (no model calls, no cost)
+```
+
+Each output is scored two ways:
+
+- **Rule-based** (`lib/eval/rules.ts`, deterministic): body length ≤ platform limit,
+  hashtag count in range, required title present, and a language sanity check.
+- **LLM-as-judge** (`lib/eval/judge.ts`): a _second, independent_ model grades each
+  output 1–5 on four rubric dimensions — constraint adherence, target-language
+  correctness, key-point capture, and tone match.
+
+A case passes only when **every rule check passes AND every judge dimension ≥ 3**. Configure
+with env vars: `EVAL_GEN_MODEL`, `EVAL_JUDGE_MODEL` (both `"provider/model"`),
+`EVAL_MIN_PASS_RATE` (CI gate, default 70), `EVAL_CONCURRENCY`.
+
+Runs are keyed by a **prompt fingerprint** (the set of fragment versions from
+`lib/prompts.ts`) and appended to `eval-results/history.jsonl`, so bumping a template
+version lands as a new datapoint and the harness reports the pass-rate delta vs. the last
+comparable run. The harness exits non-zero when the pass-rate is below the gate, so it
+doubles as a CI check. The deterministic scoring logic is unit-tested in
+`lib/eval/eval.test.ts` (runs offline in `pnpm test`).
 
 ## Deploy
 

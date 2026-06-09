@@ -50,3 +50,6 @@ next-env.d.ts
 
 # keep the example committed (real .env.local stays ignored)
 !.env.example
+
+# Eval harness run artifacts (POS-8)
+eval-results/
