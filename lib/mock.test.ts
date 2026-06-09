@@ -38,6 +38,22 @@ describe("mockGeneration — platform-valid output", () => {
     expect(mockGeneration(baseInput({ platform: "xiaohongshu" })).title).toBeTruthy();
     expect(mockGeneration(baseInput({ platform: "linkedin" })).title).toBeUndefined();
   });
+
+  it("writes the body in the chosen target language", () => {
+    // German and Chinese mocks must contain language-native copy, not English boilerplate —
+    // this is what makes a credential-free preview deploy demonstrate POS-7.
+    expect(mockGeneration(baseInput({ language: "de" })).body).toContain("simulierter Beitrag");
+    expect(mockGeneration(baseInput({ language: "zh" })).body).toContain("模拟帖子");
+    expect(mockGeneration(baseInput({ language: "en" })).body).toContain("simulated post");
+  });
+
+  it("reflects the chosen tone so changing tone changes the output", () => {
+    const professional = mockGeneration(baseInput({ tone: "professional" })).body;
+    const punchy = mockGeneration(baseInput({ tone: "punchy" })).body;
+    expect(professional).not.toEqual(punchy);
+    expect(professional).toContain("Professional");
+    expect(punchy).toContain("Punchy");
+  });
 });
 
 describe("mockObjectStream — JSON wire format", () => {
