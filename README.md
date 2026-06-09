@@ -1,36 +1,67 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Multilingual Content Studio
 
-## Getting Started
+Paste a source text once and generate platform-ready social posts — **LinkedIn**, **X**,
+and **小红书 (Xiaohongshu)** — in **English / Deutsch / 中文** with tone control, streamed
+live token-by-token. AI-assisted draft, human review on top.
 
-First, run the development server:
+Built with Next.js (App Router) + TypeScript, the [Vercel AI SDK v6](https://sdk.vercel.ai),
+Zod, and the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway).
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+cp .env.example .env.local   # optional — see "Environment variables" below
+pnpm dev                     # http://localhost:3200
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+With **no** credential configured the app runs end to end against a built-in **mock**
+model (zero cost), so you can develop the full UX without a key. Add a credential to
+stream from a real model.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+All variables are optional; see [`.env.example`](./.env.example). Set them in
+`.env.local` for local dev (git-ignored) or in the Vercel project for deployments.
+**Never commit real keys.**
 
-## Learn More
+| Variable | Required? | Purpose |
+| --- | --- | --- |
+| `AI_GATEWAY_API_KEY` | Preferred | Routes every provider through the Vercel AI Gateway using `"provider/model"` strings. One key covers OpenAI, Google, and Anthropic — no provider SDK key needed. |
+| `VERCEL_OIDC_TOKEN` | Auto on Vercel | Auto-injected on Vercel deployments; authenticates the AI Gateway with no manual key. |
+| `OPENAI_API_KEY` | Fallback | Enables OpenAI models directly when the gateway is not configured. |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Fallback | Enables Google Gemini models directly. |
+| `ANTHROPIC_API_KEY` | Fallback | Enables Anthropic Claude models directly. |
 
-To learn more about Next.js, take a look at the following resources:
+**Credential resolution order** (see `lib/resolve-model.ts`):
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. **AI Gateway** — if `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN` is present, the model
+   is resolved as a `"provider/model"` string through the gateway. No provider SDK is used.
+2. **Provider SDK fallback** — otherwise, if the selected provider's own key is set, that
+   provider's SDK is used directly (the "unless required" escape hatch).
+3. **Mock** — if neither is available, the request streams the mock model.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## How it works
 
-## Deploy on Vercel
+The browser only ever talks to `POST /api/generate`; model calls and keys never reach the
+client. The request is validated with Zod against the prompt registry, the prompt is
+composed from `(platform × language × tone)` in `lib/prompts.ts`, and the response is
+streamed back with `streamText(...).toTextStreamResponse()`. The mock and the real model
+return the identical plain-text stream, so the client code is unchanged either way.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Path | Role |
+| --- | --- |
+| `app/api/generate/route.ts` | Zod-validated streaming generation endpoint. |
+| `app/api/config/route.ts` | Reports which providers are "live" (booleans only). |
+| `lib/models.ts` | Client-safe provider/model registry (no SDK imports). |
+| `lib/resolve-model.ts` | Server-only gateway-first model resolution. |
+| `lib/prompts.ts` | Versioned, composable prompt builder. |
+| `lib/mock.ts` | Zero-cost streaming mock model. |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+> Persistence (a database layer) is **off the current MVP path** and intentionally not
+> part of this branch — generation and review are the focus first.
+
+## Deploy
+
+Deploy on [Vercel](https://vercel.com/new). On Vercel the AI Gateway authenticates via the
+auto-injected `VERCEL_OIDC_TOKEN`, so no key configuration is needed to stream live.

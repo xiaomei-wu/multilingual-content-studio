@@ -1,47 +1,53 @@
 // app/api/generate/route.ts
 // Server-side streaming endpoint. The browser ONLY ever talks to this route — the
-// model call and your API keys never reach the client. (Interview talking point #1.)
+// model call and any API keys never reach the client. (Interview talking point #1.)
 //
-// Provider + model are chosen by the user and validated against the registry. If the
-// selected provider's key is configured we stream from it; otherwise we fall back to
-// the mock. Both paths return the SAME plain-text stream, so the client is unchanged.
+// The request is validated with Zod against the prompt registry. Provider + model are
+// chosen by the user; if a live credential exists (AI Gateway, or that provider's own
+// key as a fallback) we stream from the model, otherwise we fall back to the mock.
+// Both paths return the SAME plain-text stream, so the client is unchanged.
 
 import { streamText } from "ai";
+import { z } from "zod";
 import { resolveModel } from "@/lib/resolve-model";
-import { getProvider, isValidSelection } from "@/lib/models";
-import {
-  buildPrompt,
-  PLATFORMS,
-  LANGUAGES,
-  TONES,
-  type PromptInput,
-} from "@/lib/prompts";
+import { PROVIDERS, isValidSelection, type ProviderId } from "@/lib/models";
+import { buildPrompt, PLATFORMS, LANGUAGES, TONES } from "@/lib/prompts";
 import { mockStream } from "@/lib/mock";
 
+const PROVIDER_IDS = PROVIDERS.map((p) => p.id) as [string, ...string[]];
+
+const GenerateRequest = z
+  .object({
+    source: z.string().trim().min(1, "Missing source text"),
+    platform: z.enum(PLATFORMS),
+    language: z.enum(LANGUAGES),
+    tone: z.enum(TONES),
+    provider: z.enum(PROVIDER_IDS),
+    model: z.string().min(1),
+  })
+  .refine((b) => isValidSelection(b.provider, b.model), {
+    message: "Invalid provider or model",
+    path: ["model"],
+  });
+
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
-  const { source, platform, language, tone, provider, model } = body ?? {};
-
-  if (typeof source !== "string" || !source.trim()) {
-    return new Response("Missing source text", { status: 400 });
-  }
-  if (
-    !PLATFORMS.includes(platform) ||
-    !LANGUAGES.includes(language) ||
-    !TONES.includes(tone)
-  ) {
-    return new Response("Invalid platform, language, or tone", { status: 400 });
-  }
-  if (!isValidSelection(provider, model)) {
-    return new Response("Invalid provider or model", { status: 400 });
+  const json = await req.json().catch(() => null);
+  const parsed = GenerateRequest.safeParse(json);
+  if (!parsed.success) {
+    return Response.json(
+      { error: z.treeifyError(parsed.error) },
+      { status: 400 },
+    );
   }
 
-  const input: PromptInput = { source, platform, language, tone };
+  const { source, platform, language, tone, provider, model } = parsed.data;
+  const input = { source, platform, language, tone };
   const prompt = buildPrompt(input);
 
-  // ── Selected provider has no key → mock fallback ──
-  const providerInfo = getProvider(provider)!;
-  if (!process.env[providerInfo.envVar]) {
+  // No live credential (no gateway + no provider key) → stream the mock so the app
+  // still works end to end with zero cost.
+  const resolved = resolveModel(provider as ProviderId, model);
+  if (!resolved) {
     return new Response(mockStream(input), {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
@@ -50,11 +56,7 @@ export async function POST(req: Request) {
     });
   }
 
-  // ── Real model → stream from the chosen provider ──
-  const result = streamText({
-    model: resolveModel(provider, model),
-    prompt,
-  });
-
+  // Real model → stream from the chosen provider (via gateway or provider SDK).
+  const result = streamText({ model: resolved, prompt });
   return result.toTextStreamResponse();
 }
