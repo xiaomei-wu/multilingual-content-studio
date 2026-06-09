@@ -42,7 +42,7 @@ export async function POST(req: Request) {
 
   const { source, platform, language, tone, provider, model } = parsed.data;
   const input = { source, platform, language, tone };
-  const prompt = buildPrompt(input);
+  const { system, user } = buildPrompt(input);
 
   // No live credential (no gateway + no provider key) → stream the mock so the app
   // still works end to end with zero cost.
@@ -57,6 +57,6 @@ export async function POST(req: Request) {
   }
 
   // Real model → stream from the chosen provider (via gateway or provider SDK).
-  const result = streamText({ model: resolved, prompt });
+  const result = streamText({ model: resolved, system, prompt: user });
   return result.toTextStreamResponse();
 }
