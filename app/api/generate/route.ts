@@ -15,6 +15,7 @@
 //   - bounded retries + structured error logging on the real-model path.
 
 import { streamObject } from "ai";
+import { after } from "next/server";
 import { z } from "zod";
 import { resolveModel } from "@/lib/resolve-model";
 import { PROVIDERS, isValidSelection, type ProviderId } from "@/lib/models";
@@ -143,20 +144,25 @@ export async function POST(req: Request) {
   if (!resolved) {
     const mock = mockObjectStream(input);
     // Tee so we can measure the emitted bytes and record a metric on close without
-    // disturbing the bytes the client receives.
+    // disturbing the bytes the client receives. We register the metering with `after()`
+    // so the serverless runtime keeps the instance alive to finish it AFTER the response
+    // streams out — a bare fire-and-forget gets suspended once the body flushes, which
+    // silently dropped both the metric and (POS-15) the activation count on Fluid Compute.
     const [toClient, toMeter] = mock.tee();
-    void meterMockStream(toMeter, {
-      requestId,
-      platform,
-      language,
-      tone,
-      provider,
-      model,
-      promptVersion,
-      promptText: `${system}\n${user}`,
-      start,
-      sessionId,
-    });
+    after(
+      meterMockStream(toMeter, {
+        requestId,
+        platform,
+        language,
+        tone,
+        provider,
+        model,
+        promptVersion,
+        promptText: `${system}\n${user}`,
+        start,
+        sessionId,
+      }),
+    );
     return new Response(toClient, {
       headers: { ...baseHeaders, "x-generation-mode": "mock" },
     });
